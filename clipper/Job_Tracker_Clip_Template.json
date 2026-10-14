@@ -1,0 +1,96 @@
+{
+  "schemaVersion": "0.1.0",
+  "name": "Job → Tracker",
+  "behavior": "create",
+  "noteContentFormat": "{{content}}",
+  "properties": [
+    {
+      "name": "title",
+      "value": "{{title}}",
+      "type": "text"
+    },
+    {
+      "name": "source",
+      "value": "{{url}}",
+      "type": "text"
+    },
+    {
+      "name": "created",
+      "value": "{{date|date:\"YYYY-MM-DD\"}}",
+      "type": "date"
+    },
+    {
+      "name": "tracker",
+      "value": "job",
+      "type": "text"
+    },
+    {
+      "name": "company",
+      "value": "{{\"Name of the company hiring for this job. Reply with only the value, no labels or extra words. If the posting does not say, reply with nothing.\"|replace:\"/[\\t\\n\\r]+/g\":\" \"|trim}}",
+      "type": "text"
+    },
+    {
+      "name": "job_title",
+      "value": "{{\"Exact job title, copied verbatim from the posting. Reply with only the value, no labels or extra words. If the posting does not say, reply with nothing.\"|replace:\"/[\\t\\n\\r]+/g\":\" \"|trim}}",
+      "type": "text"
+    },
+    {
+      "name": "job_category",
+      "value": "{{\"Classify this job as exactly one of: Software Engineering, Data Science, Machine Learning / AI, Data Engineering, Other. Reply with only the value, no labels or extra words. If the posting does not say, reply with nothing.\"|replace:\"/[\\t\\n\\r]+/g\":\" \"|trim}}",
+      "type": "text"
+    },
+    {
+      "name": "location",
+      "value": "{{\"Job location as stated, e.g. Remote, US or Chicago, IL. Reply with only the value, no labels or extra words. If the posting does not say, reply with nothing.\"|replace:\"/[\\t\\n\\r]+/g\":\" \"|trim}}",
+      "type": "text"
+    },
+    {
+      "name": "work_arrangement",
+      "value": "{{\"Work arrangement: exactly one of Remote, Hybrid, On-site. Reply with only the value, no labels or extra words. If the posting does not say, reply with nothing.\"|replace:\"/[\\t\\n\\r]+/g\":\" \"|trim}}",
+      "type": "text"
+    },
+    {
+      "name": "employment_type",
+      "value": "{{\"Employment type: one of Full-time, Part-time, Internship, Contract. Reply with only the value, no labels or extra words. If the posting does not say, reply with nothing.\"|replace:\"/[\\t\\n\\r]+/g\":\" \"|trim}}",
+      "type": "text"
+    },
+    {
+      "name": "skills",
+      "value": "{{\"Comma-separated list of concrete technical skills requested (languages, frameworks, platforms, databases, cloud, tools). No soft skills. Reply with only the value, no labels or extra words. If the posting does not say, reply with nothing.\"|replace:\"/[\\t\\n\\r]+/g\":\" \"|trim}}",
+      "type": "text"
+    },
+    {
+      "name": "salary",
+      "value": "{{\"Salary or pay range exactly as written. Reply with only the value, no labels or extra words. If the posting does not say, reply with nothing.\"|replace:\"/[\\t\\n\\r]+/g\":\" \"|trim}}",
+      "type": "text"
+    },
+    {
+      "name": "experience",
+      "value": "{{\"Years or level of experience required, as stated. Reply with only the value, no labels or extra words. If the posting does not say, reply with nothing.\"|replace:\"/[\\t\\n\\r]+/g\":\" \"|trim}}",
+      "type": "text"
+    },
+    {
+      "name": "education",
+      "value": "{{\"Degree or education requirement, as stated. Reply with only the value, no labels or extra words. If the posting does not say, reply with nothing.\"|replace:\"/[\\t\\n\\r]+/g\":\" \"|trim}}",
+      "type": "text"
+    },
+    {
+      "name": "tags",
+      "value": "clippings, job",
+      "type": "multitext"
+    }
+  ],
+  "triggers": [
+    "schema:@JobPosting",
+    "https://www.linkedin.com/jobs/",
+    "https://boards.greenhouse.io/",
+    "https://job-boards.greenhouse.io/",
+    "https://jobs.lever.co/",
+    "/myworkdayjobs\\.com/",
+    "https://www.indeed.com/",
+    "https://jobs.ashbyhq.com/"
+  ],
+  "noteNameFormat": "{{title|safe_name}}",
+  "path": "Clippings",
+  "context": ""
+}
