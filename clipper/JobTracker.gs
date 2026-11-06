@@ -204,6 +204,36 @@ function setup() {
 
   // Leads tab. (An earlier version made Today / Daily Log tabs for LeetCode — the NeetCode page does that now.)
   ensureLeadsSheet_(ss);
+  if (!String(settings.getRange("G1").getValue()).trim()) {
+    settings
+      .getRange("G1:H1")
+      .setValues([["Lead locations (state codes)", "Include remote jobs?"]])
+      .setFontWeight("bold")
+      .setFontColor("white")
+      .setBackground(NAVY);
+    settings
+      .getRange("G2:H2")
+      .setValues([[DEFAULT_LEAD_STATES, "yes"]])
+      .setWrap(true);
+    settings.setColumnWidth(7, 320).setColumnWidth(8, 150);
+  }
+  if (!String(settings.getRange("I1").getValue()).trim()) {
+    settings
+      .getRange("I1")
+      .setValue("Lead types")
+      .setFontWeight("bold")
+      .setFontColor("white")
+      .setBackground(NAVY);
+    settings.getRange("I2").setValue("Both");
+    settings.setColumnWidth(9, 130);
+  }
+  settings
+    .getRange("I2")
+    .setDataValidation(
+      SpreadsheetApp.newDataValidation()
+        .requireValueInList(["Both", "New Grad", "Internship"], true)
+        .build(),
+    );
   [TODAY_OLD, DAILY_LOG_OLD].forEach((n) => {
     const sh = ss.getSheetByName(n);
     if (sh) ss.deleteSheet(sh);
@@ -515,6 +545,12 @@ function updateHowTo_(ss) {
     [""],
     [
       "Daily routine (NeetCode + Applications page): do your NeetCode problems, then apply to the jobs it lists (from the Leads tab), clip each with Job → Tracker, tailor + submit, then Import new clips now.",
+    ],
+    [
+      "Lead types: Settings I2 = Both, New Grad, or Internship — pick what you are focusing on, then Refresh job leads.",
+    ],
+    [
+      "Lead locations: Settings G2 lists the states you want (East Coast + nearby and CA by default); H2 = yes/no for remote jobs. Run Refresh job leads after changing them.",
     ],
     [
       "Leads: every 4 hours new-grad + internship jobs posted in the last 2 days are pulled from the SimplifyJobs GitHub lists. Jobs you already applied to are marked Applied; unticked leads older than 7 days are removed.",
@@ -1016,6 +1052,7 @@ const LEADS = "Leads";
 const TODAY_OLD = "Today"; // removed tabs from an earlier version
 const DAILY_LOG_OLD = "Daily Log";
 const FEED_NAME = "job-tracker-feed.json";
+const FEED_FILE_ID = "1GFrq2JpHGqpBp14UODRAIpPWPedj52ih"; // created via Claude's Drive connection
 const LEAD_SOURCES = [
   {
     type: "New Grad",
@@ -1043,6 +1080,48 @@ const LEAD_HEADERS = [
 const LEAD_CATEGORY_OK = /software|ai\/ml|data|machine learning/i; // skip Hardware, Product, Quant
 const LEAD_TITLE_SKIP =
   /\b(senior|sr\.?|staff|principal|manager|director|lead)\b/i;
+// Default lead locations: East Coast + nearby, and California. Edit on Settings G2 (comma-separated state codes).
+const DEFAULT_LEAD_STATES =
+  "ME, NH, VT, MA, RI, CT, NY, NJ, PA, DE, MD, DC, VA, WV, NC, SC, GA, FL, CA";
+const CITY_STATE = {
+  sf: "CA",
+  "san francisco": "CA",
+  "bay area": "CA",
+  "silicon valley": "CA",
+  "los angeles": "CA",
+  "san diego": "CA",
+  "san jose": "CA",
+  nyc: "NY",
+  "new york": "NY",
+  "new york city": "NY",
+  boston: "MA",
+  "washington dc": "DC",
+  "washington, dc": "DC",
+  philadelphia: "PA",
+  atlanta: "GA",
+  miami: "FL",
+};
+const STATE_NAMES = {
+  maine: "ME",
+  "new hampshire": "NH",
+  vermont: "VT",
+  massachusetts: "MA",
+  "rhode island": "RI",
+  connecticut: "CT",
+  "new york": "NY",
+  "new jersey": "NJ",
+  pennsylvania: "PA",
+  delaware: "DE",
+  maryland: "MD",
+  virginia: "VA",
+  "west virginia": "WV",
+  "north carolina": "NC",
+  "south carolina": "SC",
+  georgia: "GA",
+  florida: "FL",
+  california: "CA",
+  "district of columbia": "DC",
+};
 const US_STATES = new Set(
   (
     "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY " +
@@ -1120,35 +1199,49 @@ function refreshLeads_(ss) {
     });
   });
 
+  // Location preferences (Settings G2 / H2)
+  const prefs = leadPrefs_(ss);
+  for (const [id, l] of leads) {
+    if (l.want) continue; // ticked leads always stay
+    if (
+      !locationOk_(String(l.location).split(/;\s*/), prefs) ||
+      !prefs.types.includes(l.type)
+    )
+      leads.delete(id);
+  }
+
   // Pull fresh listings
   let added = 0;
-  LEAD_SOURCES.forEach((src) => {
-    const res = UrlFetchApp.fetch(src.url, { muteHttpExceptions: true });
-    if (res.getResponseCode() !== 200)
-      throw new Error(src.type + " list returned " + res.getResponseCode());
-    JSON.parse(res.getContentText()).forEach((j) => {
-      if (!j || j.active !== true || j.is_visible === false) return;
-      if (!(Number(j.date_posted) >= now - LEAD_NEW_DAYS * 86400)) return;
-      if (!LEAD_CATEGORY_OK.test(String(j.category || ""))) return;
-      if (LEAD_TITLE_SKIP.test(String(j.title || ""))) return;
-      if (!isUS_(j.locations)) return;
-      if (pastTermsOnly_(j.terms)) return;
-      const id = String(j.id || j.url);
-      if (leads.has(id)) return;
-      leads.set(id, {
-        want: false,
-        posted: new Date(Number(j.date_posted) * 1000),
-        company: j.company_name || "",
-        role: j.title || "",
-        location: (j.locations || []).join("; "),
-        type: src.type,
-        category: j.category || "",
-        url: j.url || "",
-        id: id,
+  LEAD_SOURCES.filter((src) => prefs.types.includes(src.type)).forEach(
+    (src) => {
+      const res = UrlFetchApp.fetch(src.url, { muteHttpExceptions: true });
+      if (res.getResponseCode() !== 200)
+        throw new Error(src.type + " list returned " + res.getResponseCode());
+      JSON.parse(res.getContentText()).forEach((j) => {
+        if (!j || j.active !== true || j.is_visible === false) return;
+        if (!(Number(j.date_posted) >= now - LEAD_NEW_DAYS * 86400)) return;
+        if (!LEAD_CATEGORY_OK.test(String(j.category || ""))) return;
+        if (LEAD_TITLE_SKIP.test(String(j.title || ""))) return;
+        if (!isUS_(j.locations)) return;
+        if (!locationOk_(j.locations, prefs)) return;
+        if (pastTermsOnly_(j.terms)) return;
+        const id = String(j.id || j.url);
+        if (leads.has(id)) return;
+        leads.set(id, {
+          want: false,
+          posted: new Date(Number(j.date_posted) * 1000),
+          company: j.company_name || "",
+          role: j.title || "",
+          location: (j.locations || []).join("; "),
+          type: src.type,
+          category: j.category || "",
+          url: j.url || "",
+          id: id,
+        });
+        added++;
       });
-      added++;
-    });
-  });
+    },
+  );
 
   // Mark ones already applied to; drop stale unticked ones
   const applied = appliedIndex_(apps);
@@ -1217,6 +1310,56 @@ function pastTermsOnly_(terms) {
     .map(Number);
   if (!years.length || years.length < (terms || []).length) return false;
   return Math.max.apply(null, years) <= new Date().getFullYear();
+}
+
+function leadPrefs_(ss) {
+  const st = ss.getSheetByName(SETTINGS);
+  const raw = st ? String(st.getRange("G2").getValue() || "") : "";
+  const remote = st ? String(st.getRange("H2").getValue() || "yes") : "yes";
+  const states = new Set(
+    (raw.trim() ? raw : DEFAULT_LEAD_STATES)
+      .toUpperCase()
+      .split(/[^A-Z]+/)
+      .filter((x) => x.length === 2),
+  );
+  const t = st
+    ? String(st.getRange("I2").getValue() || "Both")
+        .trim()
+        .toLowerCase()
+    : "both";
+  const types = /intern/.test(t)
+    ? ["Internship"]
+    : /new/.test(t)
+      ? ["New Grad"]
+      : ["New Grad", "Internship"];
+  return {
+    states: states,
+    remote: !/^(no|n|false)$/i.test(remote.trim()),
+    types: types,
+  };
+}
+
+/** True if any of the job's locations is in a preferred state (or is US-remote and remote is allowed). */
+function locationOk_(locations, prefs) {
+  const locs = (locations || []).map(String).filter(Boolean);
+  if (!locs.length) return prefs.remote;
+  return locs.some((l) => {
+    if (/\bremote\b/i.test(l)) return prefs.remote;
+    const code =
+      (l.match(/,\s*([A-Z]{2})\b/) || [])[1] ||
+      (l.match(/\b([A-Z]{2})$/) || [])[1];
+    if (code && prefs.states.has(code)) return true;
+    const low = l.toLowerCase().trim();
+    for (const k in STATE_NAMES)
+      if (low.includes(k) && prefs.states.has(STATE_NAMES[k])) return true;
+    for (const k in CITY_STATE)
+      if (
+        (low === k || low.startsWith(k + ",") || low.startsWith(k + " ")) &&
+        prefs.states.has(CITY_STATE[k])
+      )
+        return true;
+    return false;
+  });
 }
 
 function isUS_(locations) {
@@ -1350,6 +1493,13 @@ function writeFeed_(ss) {
     leads: leads.slice(0, 25),
   };
   const json = JSON.stringify(feed);
+  // Write into the feed file Claude created (so Claude's Google Drive connector can read it).
+  try {
+    DriveApp.getFileById(FEED_FILE_ID).setContent(json);
+    return;
+  } catch (e) {
+    /* fall back to by-name */
+  }
   const it = DriveApp.getRootFolder().getFilesByName(FEED_NAME);
   if (it.hasNext()) it.next().setContent(json);
   else
