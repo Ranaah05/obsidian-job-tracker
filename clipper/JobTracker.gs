@@ -3,9 +3,9 @@
  * into this Google Sheet, for one or more people.
  *
  * HOW IT WORKS
- *  - Each person's Obsidian "Clippings" folder syncs to Google Drive.
- *  - The Settings tab lists each person + a link to their Clippings folder.
- *  - When you click Job Tracker → Import new clips now, importClips() looks in each folder (and sub-folders) for
+ *  - Each person's Obsidian "Job Clips" folder syncs to Google Drive.
+ *  - The Settings tab lists each person + a link to their Job Clips folder.
+ *  - Every hour (or when you click Job Tracker → Import new clips now), importClips() looks in each folder (and sub-folders) for
  *    notes with `tracker: job` in their properties, and adds one row per new job.
  *  - Notes already imported are remembered on the hidden "Imported" tab, so a
  *    job is never added twice.
@@ -38,6 +38,7 @@ const COLS = {
   education: "Degree / Education Requirement",
   updated: "Date Last Updated",
   notes: "Notes",
+  resume: "Resume",
 };
 const BASE_HEADERS = [
   COLS.applied,
@@ -93,6 +94,7 @@ function onOpen() {
     .createMenu("Job Tracker")
     .addItem("Import new clips now", "importClips")
     .addItem("Sort & tidy now", "tidyNow")
+    .addItem("Refresh job leads", "dailyRun")
     .addSeparator()
     .addItem("Run setup (first time / rebuild dashboard)", "setup")
     .addToUi();
@@ -127,7 +129,7 @@ function setup() {
     }
     map = headerMap_(apps);
   }
-  [COLS.applicant, COLS.appliedBy].forEach((h) => {
+  [COLS.applicant, COLS.appliedBy, COLS.resume].forEach((h) => {
     if (!map[h]) {
       apps.getRange(1, apps.getLastColumn() + 1).setValue(h);
       map = headerMap_(apps);
@@ -165,6 +167,17 @@ function setup() {
     settings.setFrozenRows(1);
   }
 
+  // Settings column D: each person's "Resumes Sent" folder (résumé archive)
+  if (!String(settings.getRange("D1").getValue()).trim()) {
+    settings
+      .getRange("D1")
+      .setValue("Resumes Sent folder link (Google Drive)")
+      .setFontWeight("bold")
+      .setFontColor("white")
+      .setBackground(NAVY);
+    settings.setColumnWidth(4, 360);
+  }
+
   // Fill Applicant on existing rows that don't have one
   const firstName = String(settings.getRange("A2").getValue() || "").trim();
   const last = lastDataRow_(apps, map);
@@ -189,10 +202,21 @@ function setup() {
   buildDashboard_(ss, map);
   updateHowTo_(ss);
 
-  // Manual import only (menu button) — remove any old automatic timer
+  // Leads tab. (An earlier version made Today / Daily Log tabs for LeetCode — the NeetCode page does that now.)
+  ensureLeadsSheet_(ss);
+  [TODAY_OLD, DAILY_LOG_OLD].forEach((n) => {
+    const sh = ss.getSheetByName(n);
+    if (sh) ss.deleteSheet(sh);
+  });
+
+  // Free timers (no AI, nothing leaves Google except downloading the public job lists):
+  //  - every hour: import new clips, link résumés, update the feed
+  //  - every 4 hours: refresh job leads (+ feed)
   ScriptApp.getProjectTriggers()
-    .filter((t) => t.getHandlerFunction() === "importClips")
+    .filter((t) => ["importClips", "dailyRun"].includes(t.getHandlerFunction()))
     .forEach((t) => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger("importClips").timeBased().everyHours(1).create();
+  ScriptApp.newTrigger("dailyRun").timeBased().everyHours(4).create();
 
   ss.toast(
     "Setup done. Paste each person's Clippings folder link on the Settings tab.",
@@ -469,7 +493,7 @@ function updateHowTo_(ss) {
     ["Job Tracker — How to Use"],
     [""],
     [
-      'Automatic: clip a job with the "Job → Tracker" Web Clipper template. Then click Job Tracker → Import new clips now.',
+      'Automatic: clip a job with the "Job → Tracker" Web Clipper template. It is imported within the hour, or right away with Job Tracker → Import new clips now.',
     ],
     [
       "Manual: type into the next blank row on Applications. Pick your name in Applicant, then use Job Tracker → Sort & tidy now.",
@@ -486,11 +510,24 @@ function updateHowTo_(ss) {
       "Updating status: change Application Status to Interview or Rejected. The dashboard updates by itself.",
     ],
     [
+      'Résumés: copies saved to your "Resumes Sent" Drive folder as "Company - Job Title.pdf" are linked in the Resume column on Import or Sort & tidy.',
+    ],
+    [""],
+    [
+      "Daily routine (NeetCode + Applications page): do your NeetCode problems, then apply to the jobs it lists (from the Leads tab), clip each with Job → Tracker, tailor + submit, then Import new clips now.",
+    ],
+    [
+      "Leads: every 4 hours new-grad + internship jobs posted in the last 2 days are pulled from the SimplifyJobs GitHub lists. Jobs you already applied to are marked Applied; unticked leads older than 7 days are removed.",
+    ],
+    [
+      'Feed: the script keeps a small file "job-tracker-feed.json" in your Google Drive (applied today + top leads). Your daily page reads it — leave it there.',
+    ],
+    [
       'Dashboard: use the yellow "Show" box to see one person or All. Everything on the dashboard is a live formula.',
     ],
     [""],
     [
-      'Only notes with "tracker: job" in their properties are imported. Rows are sorted by Month, then Company, so when two people apply to the same job their rows sit together. Applied By shows everyone who applied, and those rows are shaded green.',
+      'Only notes with "tracker: job" in their properties are imported. Rows are sorted by Month, then Date Applied (oldest to newest). Applied By shows everyone who applied to a job, and those rows are shaded green.',
     ],
   ];
   h.getRange(1, 1, lines.length, 1).setValues(lines);
@@ -601,9 +638,19 @@ function importClips() {
       log
         .getRange(log.getLastRow() + 1, 1, logRows.length, 4)
         .setValues(logRows);
-    if (newRows.length) {
-      organize_(apps);
-      ss.toast(`Added ${newRows.length} new application(s).`, "Job Tracker", 5);
+    if (newRows.length) organize_(apps);
+    const linked = linkResumes_(apps);
+    try {
+      writeFeed_(ss);
+    } catch (e) {
+      /* feed is optional */
+    }
+    if (newRows.length || linked) {
+      ss.toast(
+        `Added ${newRows.length} new application(s), linked ${linked} résumé(s).`,
+        "Job Tracker",
+        5,
+      );
     }
   } finally {
     lock.releaseLock();
@@ -650,7 +697,7 @@ function buildRow_(fm, applicant, url, map, width) {
 
 /* -------------------------------------------------------------- organize */
 
-/** Fills Month + Applied By, then sorts: Month -> Company -> Job Title -> Applicant. */
+/** Fills Month + Applied By, then sorts: Month -> Date Applied -> Company -> Job Title -> Applicant. */
 function organize_(apps) {
   apps = apps || SpreadsheetApp.getActive().getSheetByName(APPS);
   const map = headerMap_(apps);
@@ -675,11 +722,16 @@ function organize_(apps) {
     who.get(k).add(n);
   });
 
+  // Work out the month in the SHEET's time zone (the script's time zone can differ,
+  // which used to shift "Oct 1" back to "Sep 30" and show the wrong month).
+  const tz = SpreadsheetApp.getActive().getSpreadsheetTimeZone();
   const monthCol = vals.map((r) => {
     const d = r[c(COLS.applied)];
-    return [
-      d instanceof Date ? new Date(d.getFullYear(), d.getMonth(), 1) : "",
-    ];
+    if (!(d instanceof Date)) return [""];
+    const [y, m] = Utilities.formatDate(d, tz, "yyyy-MM")
+      .split("-")
+      .map(Number);
+    return [new Date(y, m - 1, 15, 12)]; // mid-month, midday: safe in any time zone
   });
   const byCol = vals.map((r) => [
     Array.from(who.get(jobKey(r)) || [])
@@ -692,6 +744,7 @@ function organize_(apps) {
   try {
     apps.getRange(2, 1, last - 1, width).sort([
       { column: map[COLS.month], ascending: true },
+      { column: map[COLS.applied], ascending: true },
       { column: map[COLS.company], ascending: true },
       { column: map[COLS.title], ascending: true },
       { column: map[COLS.applicant], ascending: true },
@@ -703,13 +756,152 @@ function organize_(apps) {
 
 /** Menu item: re-sort after typing rows by hand. */
 function tidyNow() {
-  organize_();
+  const apps = SpreadsheetApp.getActive().getSheetByName(APPS);
+  organize_(apps);
+  const linked = linkResumes_(apps);
+  try {
+    writeFeed_();
+  } catch (e) {
+    /* feed is optional */
+  }
+  if (linked)
+    SpreadsheetApp.getActive().toast(
+      `Linked ${linked} résumé(s).`,
+      "Job Tracker",
+      5,
+    );
+}
+
+/* --------------------------------------------------------------- résumés */
+
+/**
+ * Links each row to the résumé that was sent for it.
+ * Each person's "Resumes Sent" folder (Settings column D) holds PDFs named
+ * "Company - Job Title.pdf". A file is linked to that person's row with the same
+ * company and the closest-matching job title, if that row's Resume cell is empty.
+ * Newest files are matched first, so a re-saved revision wins over an older copy.
+ */
+function linkResumes_(apps) {
+  const ss = SpreadsheetApp.getActive();
+  apps = apps || ss.getSheetByName(APPS);
+  const settings = ss.getSheetByName(SETTINGS);
+  const map = headerMap_(apps);
+  if (!map[COLS.resume] || !settings) return 0;
+  const last = lastDataRow_(apps, map);
+  if (last < 2) return 0;
+
+  const vals = apps.getRange(2, 1, last - 1, apps.getLastColumn()).getValues();
+  const resRange = apps.getRange(2, map[COLS.resume], last - 1, 1);
+  const rich = resRange.getRichTextValues();
+  const col = (name) => map[name] - 1;
+  let linked = 0;
+
+  settings
+    .getRange(2, 1, 19, 4)
+    .getValues()
+    .forEach((p) => {
+      const name = String(p[0]).trim(),
+        link = String(p[3]).trim();
+      if (!name || !link) return;
+      let folder;
+      try {
+        folder = DriveApp.getFolderById(folderId_(link));
+      } catch (e) {
+        return;
+      }
+
+      const files = [];
+      const it = folder.getFiles();
+      while (it.hasNext()) {
+        const f = it.next();
+        if (
+          /\.pdf$/i.test(f.getName()) ||
+          f.getMimeType() === "application/pdf"
+        )
+          files.push(f);
+      }
+      files.sort((a, b) => b.getLastUpdated() - a.getLastUpdated());
+
+      files.forEach((f) => {
+        const base = f.getName().replace(/\.pdf$/i, "");
+        const cut = base.indexOf(" - ");
+        if (cut < 0) return;
+        const fileCo = norm_(base.slice(0, cut)),
+          fileTitle = base.slice(cut + 3);
+        if (!fileCo) return;
+
+        let best = -1,
+          bestScore = 0;
+        vals.forEach((r, k) => {
+          if (
+            String(r[col(COLS.applicant)]).trim().toLowerCase() !==
+            name.toLowerCase()
+          )
+            return;
+          if (rich[k][0].getText()) return; // already has a résumé
+          const rowCo = norm_(r[col(COLS.company)]);
+          if (
+            !rowCo ||
+            !(
+              rowCo === fileCo ||
+              rowCo.includes(fileCo) ||
+              fileCo.includes(rowCo)
+            )
+          )
+            return;
+          const score = titleOverlap_(fileTitle, r[col(COLS.title)]);
+          if (score > bestScore) {
+            bestScore = score;
+            best = k;
+          }
+        });
+        if (best < 0 || bestScore < 0.5) return; // no confident match yet
+        rich[best][0] = SpreadsheetApp.newRichTextValue()
+          .setText(base)
+          .setLinkUrl(f.getUrl())
+          .build();
+        linked++;
+      });
+    });
+
+  if (linked) resRange.setRichTextValues(rich);
+  return linked;
+}
+
+function norm_(v) {
+  return String(v || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+/** Share of the file title's words that also appear in the row's title (0–1). */
+function titleOverlap_(fileTitle, rowTitle) {
+  const STOP = new Set([
+    "the",
+    "and",
+    "of",
+    "for",
+    "a",
+    "an",
+    "to",
+    "in",
+    "at",
+  ]);
+  const words = (s) =>
+    String(s || "")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w && !STOP.has(w));
+  const fw = words(fileTitle),
+    rw = new Set(words(rowTitle));
+  if (!fw.length) return 0;
+  return fw.filter((w) => rw.has(w)).length / fw.length;
 }
 
 /* --------------------------------------------------------------- helpers */
 
 function parseFrontmatter_(text) {
-  text = String(text || "").replace(/^﻿/, "");
+  text = String(text || "").replace(/^\uFEFF/, "");
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!m) return null;
   const out = {};
@@ -756,7 +948,7 @@ function oneOf_(v, list) {
 
 function toDate_(v) {
   const m = String(v || "").match(/(\d{4})-(\d{2})-(\d{2})/);
-  return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+  return m ? new Date(+m[1], +m[2] - 1, +m[3], 12) : null; // midday avoids time-zone day shifts
 }
 
 function key_(url) {
@@ -816,4 +1008,350 @@ function colLetter_(n) {
     n = Math.floor((n - 1) / 26);
   }
   return s;
+}
+
+/* ================================================================== leads */
+
+const LEADS = "Leads";
+const TODAY_OLD = "Today"; // removed tabs from an earlier version
+const DAILY_LOG_OLD = "Daily Log";
+const FEED_NAME = "job-tracker-feed.json";
+const LEAD_SOURCES = [
+  {
+    type: "New Grad",
+    url: "https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/.github/scripts/listings.json",
+  },
+  {
+    type: "Internship",
+    url: "https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/.github/scripts/listings.json",
+  },
+];
+const LEAD_NEW_DAYS = 2; // pull jobs posted in the last N days
+const LEAD_KEEP_DAYS = 7; // drop unticked leads older than this
+const LEAD_HEADERS = [
+  "☐ Want",
+  "Posted",
+  "Company",
+  "Role",
+  "Location",
+  "Type",
+  "Category",
+  "Apply",
+  "Status",
+  "ID",
+];
+const LEAD_CATEGORY_OK = /software|ai\/ml|data|machine learning/i; // skip Hardware, Product, Quant
+const LEAD_TITLE_SKIP =
+  /\b(senior|sr\.?|staff|principal|manager|director|lead)\b/i;
+const US_STATES = new Set(
+  (
+    "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY " +
+    "NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC"
+  ).split(" "),
+);
+
+/** Morning job (also on the menu): refresh leads, then the feed the daily page reads. */
+function dailyRun() {
+  const ss = SpreadsheetApp.getActive();
+  let msg = [];
+  try {
+    msg.push(refreshLeads_(ss) + " new lead(s)");
+  } catch (e) {
+    msg.push("leads failed: " + e.message);
+  }
+  try {
+    writeFeed_(ss);
+  } catch (e) {
+    msg.push("feed failed: " + e.message);
+  }
+  ss.toast(msg.join(" · "), "Job Tracker", 8);
+}
+
+function ensureLeadsSheet_(ss) {
+  let sh = ss.getSheetByName(LEADS);
+  if (!sh) sh = ss.insertSheet(LEADS);
+  sh.getRange(1, 1, 1, LEAD_HEADERS.length)
+    .setValues([LEAD_HEADERS])
+    .setFontWeight("bold")
+    .setFontColor("white")
+    .setBackground(NAVY);
+  sh.setFrozenRows(1);
+  sh.setColumnWidth(1, 70)
+    .setColumnWidth(2, 90)
+    .setColumnWidth(3, 190)
+    .setColumnWidth(4, 340)
+    .setColumnWidth(5, 220)
+    .setColumnWidth(6, 90)
+    .setColumnWidth(7, 110)
+    .setColumnWidth(8, 70)
+    .setColumnWidth(9, 90);
+  sh.hideColumns(10);
+  return sh;
+}
+
+function refreshLeads_(ss) {
+  const sh = ensureLeadsSheet_(ss);
+  const apps = ss.getSheetByName(APPS);
+  const now = Date.now() / 1000;
+
+  // What's already on the Leads tab (keep ticks)
+  const old =
+    sh.getLastRow() > 1
+      ? sh.getRange(2, 1, sh.getLastRow() - 1, LEAD_HEADERS.length).getValues()
+      : [];
+  const urlsOld =
+    sh.getLastRow() > 1
+      ? sh.getRange(2, 8, sh.getLastRow() - 1, 1).getRichTextValues()
+      : [];
+  const leads = new Map();
+  old.forEach((r, i) => {
+    const id = String(r[9]);
+    if (!id) return;
+    leads.set(id, {
+      want: r[0] === true,
+      posted: r[1],
+      company: r[2],
+      role: r[3],
+      location: r[4],
+      type: r[5],
+      category: r[6],
+      url: (urlsOld[i] && urlsOld[i][0].getLinkUrl()) || "",
+      id: id,
+    });
+  });
+
+  // Pull fresh listings
+  let added = 0;
+  LEAD_SOURCES.forEach((src) => {
+    const res = UrlFetchApp.fetch(src.url, { muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200)
+      throw new Error(src.type + " list returned " + res.getResponseCode());
+    JSON.parse(res.getContentText()).forEach((j) => {
+      if (!j || j.active !== true || j.is_visible === false) return;
+      if (!(Number(j.date_posted) >= now - LEAD_NEW_DAYS * 86400)) return;
+      if (!LEAD_CATEGORY_OK.test(String(j.category || ""))) return;
+      if (LEAD_TITLE_SKIP.test(String(j.title || ""))) return;
+      if (!isUS_(j.locations)) return;
+      if (pastTermsOnly_(j.terms)) return;
+      const id = String(j.id || j.url);
+      if (leads.has(id)) return;
+      leads.set(id, {
+        want: false,
+        posted: new Date(Number(j.date_posted) * 1000),
+        company: j.company_name || "",
+        role: j.title || "",
+        location: (j.locations || []).join("; "),
+        type: src.type,
+        category: j.category || "",
+        url: j.url || "",
+        id: id,
+      });
+      added++;
+    });
+  });
+
+  // Mark ones already applied to; drop stale unticked ones
+  const applied = appliedIndex_(apps);
+  const keepAfter = Date.now() - LEAD_KEEP_DAYS * 86400000;
+  const rows = Array.from(leads.values())
+    .filter(
+      (l) =>
+        l.want ||
+        !(l.posted instanceof Date) ||
+        l.posted.getTime() >= keepAfter,
+    )
+    .sort(
+      (a, b) =>
+        (b.posted instanceof Date ? b.posted : 0) -
+        (a.posted instanceof Date ? a.posted : 0),
+    );
+
+  const body =
+    sh.getMaxRows() > 1
+      ? sh.getRange(2, 1, sh.getMaxRows() - 1, LEAD_HEADERS.length)
+      : null;
+  if (body) {
+    body.clearContent();
+    body.removeCheckboxes();
+    body.setBackground(null);
+  }
+  if (!rows.length) return added;
+
+  const out = rows.map((l) => [
+    l.want,
+    l.posted,
+    l.company,
+    l.role,
+    l.location,
+    l.type,
+    l.category,
+    "Apply",
+    isApplied_(applied, l) ? "Applied ✓" : "",
+    l.id,
+  ]);
+  if (sh.getMaxRows() < out.length + 1)
+    sh.insertRowsAfter(sh.getMaxRows(), out.length + 1 - sh.getMaxRows());
+  sh.getRange(2, 1, out.length, LEAD_HEADERS.length).setValues(out);
+  sh.getRange(2, 1, out.length, 1).insertCheckboxes();
+  sh.getRange(2, 2, out.length, 1).setNumberFormat("mmm d");
+  sh.getRange(2, 8, out.length, 1).setRichTextValues(
+    rows.map((l) => {
+      const b = SpreadsheetApp.newRichTextValue().setText(
+        l.url ? "Apply" : "—",
+      );
+      return [(l.url ? b.setLinkUrl(l.url) : b).build()];
+    }),
+  );
+  out.forEach((r, i) => {
+    if (r[8])
+      sh.getRange(i + 2, 1, 1, LEAD_HEADERS.length).setBackground("#EEEEEE");
+  });
+  return added;
+}
+
+/** True when every internship term is for an earlier year (e.g. only "Summer 2026" while it's late 2026). */
+function pastTermsOnly_(terms) {
+  const years = (terms || [])
+    .map((t) => (String(t).match(/\b(20\d\d)\b/) || [])[1])
+    .filter(Boolean)
+    .map(Number);
+  if (!years.length || years.length < (terms || []).length) return false;
+  return Math.max.apply(null, years) <= new Date().getFullYear();
+}
+
+function isUS_(locations) {
+  const locs = (locations || []).map(String);
+  if (!locs.length) return true;
+  return locs.some(
+    (l) =>
+      /\b(USA|United States|U\.S\.)\b/i.test(l) ||
+      (/\bremote\b/i.test(l) && !/canada|uk|india|europe|mexico/i.test(l)) ||
+      US_STATES.has((l.match(/,\s*([A-Z]{2})\b/) || [])[1]),
+  );
+}
+
+/** Index of what's on the Applications tab, to mark leads already applied to. */
+function appliedIndex_(apps) {
+  const idx = { urls: new Set(), pairs: [] };
+  if (!apps) return idx;
+  const map = headerMap_(apps);
+  const last = lastDataRow_(apps, map);
+  if (last < 2) return idx;
+  apps
+    .getRange(2, 1, last - 1, apps.getLastColumn())
+    .getValues()
+    .forEach((r) => {
+      const u = key_(r[map[COLS.url] - 1]);
+      if (u) idx.urls.add(u);
+      idx.pairs.push([
+        norm_(r[map[COLS.company] - 1]),
+        String(r[map[COLS.title] - 1]),
+      ]);
+    });
+  return idx;
+}
+
+function isApplied_(idx, lead) {
+  if (lead.url && idx.urls.has(key_(lead.url))) return true;
+  const co = norm_(lead.company);
+  return (
+    !!co &&
+    idx.pairs.some(
+      ([c, t]) =>
+        c &&
+        (c === co || c.includes(co) || co.includes(c)) &&
+        titleOverlap_(lead.role, t) >= 0.6,
+    )
+  );
+}
+
+/* =================================================================== feed */
+
+/**
+ * Writes job-tracker-feed.json to the owner's Google Drive (same file every time).
+ * The NeetCode + Applications daily page reads it through the Google Drive connector:
+ *   { updated, today, people: [{name, appliedToday, appliedThisWeek, todayJobs:[{company,title}]}],
+ *     leads: [{company, role, location, type, posted, url, want}], leadsTotal }
+ */
+function writeFeed_(ss) {
+  ss = ss || SpreadsheetApp.getActive();
+  const tz = ss.getSpreadsheetTimeZone();
+  const day = (d) => Utilities.formatDate(d, tz, "yyyy-MM-dd");
+  const today = day(new Date());
+  const weekAgo = day(new Date(Date.now() - 6 * 86400000));
+
+  const apps = ss.getSheetByName(APPS);
+  const map = headerMap_(apps);
+  const last = lastDataRow_(apps, map);
+  const people = {};
+  ss.getSheetByName(SETTINGS)
+    .getRange(2, 1, 19, 1)
+    .getValues()
+    .forEach((r) => {
+      const n = String(r[0]).trim();
+      if (n)
+        people[n.toLowerCase()] = {
+          name: n,
+          appliedToday: 0,
+          appliedThisWeek: 0,
+          todayJobs: [],
+        };
+    });
+  if (last > 1)
+    apps
+      .getRange(2, 1, last - 1, apps.getLastColumn())
+      .getValues()
+      .forEach((r) => {
+        const d = r[map[COLS.applied] - 1];
+        const p =
+          people[
+            String(r[map[COLS.applicant] - 1])
+              .trim()
+              .toLowerCase()
+          ];
+        if (!p || !(d instanceof Date)) return;
+        const k = day(d);
+        if (k >= weekAgo && k <= today) p.appliedThisWeek++;
+        if (k === today) {
+          p.appliedToday++;
+          p.todayJobs.push({
+            company: String(r[map[COLS.company] - 1]),
+            title: String(r[map[COLS.title] - 1]),
+          });
+        }
+      });
+
+  const leads = [];
+  const sh = ss.getSheetByName(LEADS);
+  if (sh && sh.getLastRow() > 1) {
+    const n = sh.getLastRow() - 1;
+    const vals = sh.getRange(2, 1, n, LEAD_HEADERS.length).getValues();
+    const links = sh.getRange(2, 8, n, 1).getRichTextValues();
+    vals.forEach((r, i) => {
+      if (!r[9] || r[8]) return; // skip blank rows and ones already applied to
+      leads.push({
+        company: String(r[2]),
+        role: String(r[3]),
+        location: String(r[4]),
+        type: String(r[5]),
+        posted: r[1] instanceof Date ? day(r[1]) : "",
+        url: links[i][0].getLinkUrl() || "",
+        want: r[0] === true,
+      });
+    });
+  }
+  leads.sort((a, b) => b.want - a.want || b.posted.localeCompare(a.posted));
+
+  const feed = {
+    updated: new Date().toISOString(),
+    today: today,
+    people: Object.values(people),
+    leadsTotal: leads.length,
+    leads: leads.slice(0, 25),
+  };
+  const json = JSON.stringify(feed);
+  const it = DriveApp.getRootFolder().getFilesByName(FEED_NAME);
+  if (it.hasNext()) it.next().setContent(json);
+  else
+    DriveApp.getRootFolder().createFile(FEED_NAME, json, MimeType.PLAIN_TEXT); // plain text so the Drive connector can read it
 }
