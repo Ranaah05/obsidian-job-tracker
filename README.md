@@ -113,6 +113,16 @@ docs/screenshots/                       Screenshots (demo data only)
 
 Daily routine: do the day's NeetCode problems, tick a few leads, then for each one clip it, tailor the résumé (save it with "Ready to submit"), and apply. Update **Application Status** to Interview or Rejected as you hear back.
 
+## Testing
+
+The pure helper functions in `apps-script/JobTracker.gs` (front-matter parsing, value cleaning, URL keys, row building, title matching, lead filters) have unit tests that run on Node's built-in test runner. They need Node 18+ and have no dependencies.
+
+```sh
+npm test
+```
+
+The tests load the script unchanged with `node:vm`. They don't cover anything that uses Google services (Sheets, Drive, UrlFetch, triggers); check those by hand in the sheet. The tests also run on GitHub Actions on every push and pull request.
+
 ## Limitations
 
 - **Free AI tier.** Gemini's free tier has daily request limits that Google can change. Free-tier prompts may be used by Google to improve its products; only public job postings are sent, never the résumé.

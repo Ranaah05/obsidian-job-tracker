@@ -1121,7 +1121,18 @@ const STATE_NAMES = {
   florida: "FL",
   california: "CA",
   "district of columbia": "DC",
+  kansas: "KS",
+  arkansas: "AR",
 };
+// Whole-word match on state names, longest first, so "west virginia" is read as WV and never as VA.
+const STATE_NAME_RE = new RegExp(
+  "\\b(" +
+    Object.keys(STATE_NAMES)
+      .sort((a, b) => b.length - a.length)
+      .join("|") +
+    ")\\b",
+  "g",
+);
 const US_STATES = new Set(
   (
     "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY " +
@@ -1348,10 +1359,16 @@ function locationOk_(locations, prefs) {
     const code =
       (l.match(/,\s*([A-Z]{2})\b/) || [])[1] ||
       (l.match(/\b([A-Z]{2})$/) || [])[1];
-    if (code && prefs.states.has(code)) return true;
+    // A real state code decides alone, so "Kansas City, MO" is MO and never KS.
+    // Anything else (e.g. "SF", "US") falls through to the name and city checks.
+    if (code && US_STATES.has(code)) return prefs.states.has(code);
     const low = l.toLowerCase().trim();
-    for (const k in STATE_NAMES)
-      if (low.includes(k) && prefs.states.has(STATE_NAMES[k])) return true;
+    if (
+      (low.match(STATE_NAME_RE) || []).some((n) =>
+        prefs.states.has(STATE_NAMES[n]),
+      )
+    )
+      return true;
     for (const k in CITY_STATE)
       if (
         (low === k || low.startsWith(k + ",") || low.startsWith(k + " ")) &&
